@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  crypto-bot:
+    build: .
+    container_name: okx_crypto_bot
+    restart: always
+    volumes:
+      - ./:/app # Gắn thư mục local vào Docker để giữ lại file .session và file .env
+    deploy:
+      resources:
+        limits:
+          memory: 150M # Giới hạn RAM an toàn cho VPS sau này
