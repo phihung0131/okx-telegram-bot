@@ -17,7 +17,7 @@ TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
 
 OKX_SANDBOX_MODE = os.getenv("OKX_SANDBOX_MODE", "True").lower() == "true"
 
-TARGET_GROUP_ID = os.getenv("TARGET_GROUP_ID") if not OKX_SANDBOX_MODE else os.getenv("TARGET_GROUP_ID_DEMO")
+TARGET_GROUP_ID = int(os.getenv("TARGET_GROUP_ID") if not OKX_SANDBOX_MODE else os.getenv("TARGET_GROUP_ID_DEMO"))
 OKX_API_KEY = os.getenv("OKX_API_KEY") if not OKX_SANDBOX_MODE else os.getenv("OKX_API_KEY_DEMO")
 OKX_SECRET = os.getenv("OKX_SECRET") if not OKX_SANDBOX_MODE else os.getenv("OKX_SECRET_DEMO")
 OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE") if not OKX_SANDBOX_MODE else os.getenv("OKX_PASSPHRASE_DEMO")
@@ -337,3 +337,11 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
+# async def find_chat_ids():
+#     await client.start()
+#     async for dialog in client.iter_dialogs():
+#         print(f"{dialog.id:<25} | {type(dialog.entity).__name__:<20} | {dialog.name}")
+
+# if __name__ == '__main__':
+#     asyncio.run(find_chat_ids())
