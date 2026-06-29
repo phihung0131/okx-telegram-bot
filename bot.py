@@ -397,6 +397,42 @@ def close_position(symbol, side, coin, raw_text):
             f"💥 Lỗi: <code>{str(e)[:500]}</code>"
         )
 
+# ====================== SYNC POSITIONS LOOP ======================
+async def sync_positions_loop():
+    """Định kỳ 300s check position thực tế, dọn dẹp JSON nếu đã đóng."""
+    while True:
+        await asyncio.sleep(300)
+        if not open_positions:
+            continue
+
+        try:
+            # Lấy tất cả position đang mở thực tế trên OKX
+            actual_positions = exchange.fetch_positions()
+            active_symbols = {
+                p['symbol'] for p in actual_positions
+                if float(p.get('contracts') or 0) > 0
+            }
+
+            closed = []
+            for msg_id, pos in list(open_positions.items()):
+                if pos['symbol'] not in active_symbols:
+                    closed.append((msg_id, pos))
+
+            if closed:
+                for msg_id, pos in closed:
+                    del open_positions[msg_id]
+                    send_telegram(
+                        f"🔕 <b>LỆNH ĐÃ TỰ ĐÓNG</b> (SL/TP)\n"
+                        f"⏰ <code>{now()}</code>\n"
+                        f"🪙 <b>{pos['coin']}/USDT</b>\n"
+                        f"📋 Đã xóa khỏi tracking"
+                    )
+                    print(f"🔕 Lệnh {pos['symbol']} đã tự đóng, xóa khỏi JSON")
+                save_positions(open_positions)
+
+        except Exception as e:
+            print(f"⚠️ sync_positions_loop error: {e}")
+
 # ====================== TELEGRAM LISTENER ======================
 client = TelegramClient('session_crypto_bot', TELEGRAM_API_ID, TELEGRAM_API_HASH)
 
@@ -436,6 +472,7 @@ async def main():
     mode = "DEMO 🧪" if OKX_SANDBOX_MODE else "REAL 💰"
     print(f"⚡ Bot đã chạy - Mode: {mode}")
     await client.start()
+    asyncio.create_task(sync_positions_loop())
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
