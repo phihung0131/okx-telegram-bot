@@ -10,17 +10,17 @@ from datetime import datetime
 
 load_dotenv()
 
-TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID"))
-TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
-TARGET_GROUP_ID = int(os.getenv("TARGET_GROUP_ID"))
-
 BOT_TOKEN = os.getenv("BOT_NOTIFY_TOKEN")
 CHAT_ID = os.getenv("NOTIFY_CHAT_ID")
+TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID"))
+TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
 
-OKX_API_KEY = os.getenv("OKX_API_KEY")
-OKX_SECRET = os.getenv("OKX_SECRET")
-OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE")
 OKX_SANDBOX_MODE = os.getenv("OKX_SANDBOX_MODE", "True").lower() == "true"
+
+TARGET_GROUP_ID = os.getenv("TARGET_GROUP_ID") if not OKX_SANDBOX_MODE else os.getenv("TARGET_GROUP_ID_DEMO")
+OKX_API_KEY = os.getenv("OKX_API_KEY") if not OKX_SANDBOX_MODE else os.getenv("OKX_API_KEY_DEMO")
+OKX_SECRET = os.getenv("OKX_SECRET") if not OKX_SANDBOX_MODE else os.getenv("OKX_SECRET_DEMO")
+OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE") if not OKX_SANDBOX_MODE else os.getenv("OKX_PASSPHRASE_DEMO")
 
 USDT_BUDGET = float(os.getenv("USDT_BUDGET", 5.0))
 LEVERAGE = int(os.getenv("LEVERAGE", 5))
