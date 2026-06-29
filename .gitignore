@@ -3,3 +3,4 @@
 *.session-journal
 __pycache__/
 .venv
+open_positions.json

@@ -1,10 +1,10 @@
+import json
 import os
 import re
 import asyncio
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 import ccxt
-import time
 import requests
 from datetime import datetime
 
@@ -24,6 +24,25 @@ OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE") if not OKX_SANDBOX_MODE else os.get
 
 USDT_BUDGET = float(os.getenv("USDT_BUDGET", 5.0))
 LEVERAGE = int(os.getenv("LEVERAGE", 5))
+
+# ====================== GLOBALS ======================
+POSITIONS_FILE = "open_positions.json"
+def load_positions():
+    try:
+        with open(POSITIONS_FILE, "r") as f:
+            # JSON key luôn là string, convert lại sang int
+            return {int(k): v for k, v in json.load(f).items()}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_positions(positions):
+    with open(POSITIONS_FILE, "w") as f:
+        json.dump(positions, f, indent=2)
+
+# Khi khởi động, load lại thay vì dict rỗng
+open_positions = load_positions()
+print(f"📂 Loaded {len(open_positions)} vị thế đang mở từ file")
+
 
 def now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -119,7 +138,7 @@ def resolve_symbol(coin: str) -> str | None:
     return None
 
 # ====================== EXECUTE TRADE ======================
-def execute_trade(signal, raw_text):
+def execute_trade(signal, raw_text, source_message_id):
     symbol   = signal['symbol']
     side     = signal['side']
     sl_price = signal['sl']
@@ -291,6 +310,15 @@ def execute_trade(signal, raw_text):
             f"  Max Loss (SL hit): <code>-{est_loss:.2f} USDT</code>\n"
             f"  Max Gain (TP hit): <code>+{est_gain:.2f} USDT</code>\n"
         )
+        open_positions[source_message_id] = {
+            'symbol': symbol,
+            'side': side,
+            'coin': coin,
+            'order_id': order_id,
+            'entry': filled_price,
+        }
+        save_positions(open_positions)
+        print(f"   📝 Đã lưu position cho message_id={source_message_id}")
         print(f"   ✅ Lệnh thành công! ID: {order_id}")
 
     except Exception as e:
@@ -305,29 +333,104 @@ def execute_trade(signal, raw_text):
             f"📩 <b>Tín hiệu gốc:</b>\n<pre>{raw_text[:600]}</pre>"
         )
 
+# ====================== CLOSE POSITION ======================
+def close_position(symbol, side, coin, raw_text):
+    """Đóng lệnh theo giá thị trường."""
+    mode_tag = "🧪 DEMO" if OKX_SANDBOX_MODE else "💰 REAL"
+    close_side = 'sell' if side == 'buy' else 'buy'
+    side_tag = "🟢 LONG" if side == "buy" else "🔴 SHORT"
+
+    try:
+        # Lấy số lượng position đang mở
+        positions = exchange.fetch_positions([symbol])
+        pos = next((p for p in positions if p['symbol'] == symbol and float(p['contracts'] or 0) > 0), None)
+
+        if not pos:
+            send_telegram(
+                f"ℹ️ <b>KHÔNG CÓ POSITION ĐỂ ĐÓNG</b>\n"
+                f"⏰ <code>{now()}</code>\n"
+                f"🪙 <b>{symbol}</b>  {side_tag}\n"
+                f"📋 Có thể lệnh đã tự đóng bởi SL/TP\n\n"
+                f"📩 <b>Tin reply:</b>\n<pre>{raw_text[:400]}</pre>"
+            )
+            return
+
+        amount = float(pos['contracts'])
+        ticker = exchange.fetch_ticker(symbol)
+        market_price = ticker['last']
+
+        order = exchange.create_order(
+            symbol=symbol,
+            type='market',
+            side=close_side,
+            amount=amount,
+            params={
+                "tdMode": "cross",
+                "reduceOnly": True,
+            }
+        )
+
+        order_id     = order.get('id', 'N/A')
+        filled_price = order.get('average') or order.get('price') or market_price
+        status       = order.get('status', 'N/A')
+
+        send_telegram(
+            f"🔒 <b>ĐÓNG LỆNH THEO TÍN HIỆU REPLY</b>  {mode_tag}\n"
+            f"{'─'*20}\n"
+            f"⏰ <code>{now()}</code>\n"
+            f"🪙 <b>{coin}/USDT</b>  {side_tag}\n"
+            f"🆔 Close Order ID: <code>{order_id}</code>\n"
+            f"📊 Status: <b>{status}</b>\n"
+            f"💰 Giá đóng: <code>{filled_price}</code>\n"
+            f"📦 Amount: <code>{amount}</code> {coin}\n\n"
+            f"📩 <b>Tin reply:</b>\n<pre>{raw_text[:400]}</pre>"
+        )
+        print(f"   🔒 Đã đóng lệnh {symbol} | Price: {filled_price}")
+
+    except Exception as e:
+        import traceback
+        print(f"❌ Lỗi đóng lệnh: {e}\n{traceback.format_exc()}")
+        send_telegram(
+            f"❌ <b>LỖI KHI ĐÓNG LỆNH</b>  {mode_tag}\n"
+            f"⏰ <code>{now()}</code>\n"
+            f"🪙 <b>{symbol}</b>\n"
+            f"💥 Lỗi: <code>{str(e)[:500]}</code>"
+        )
+
 # ====================== TELEGRAM LISTENER ======================
 client = TelegramClient('session_crypto_bot', TELEGRAM_API_ID, TELEGRAM_API_HASH)
 
 @client.on(events.NewMessage(chats=TARGET_GROUP_ID))
 async def handler(event):
     text = event.raw_text
+
+    # ── Trường hợp 1: Tin reply → kiểm tra đóng lệnh ──
+    if event.message.reply_to:
+        replied_id = event.message.reply_to.reply_to_msg_id
+        if replied_id in open_positions:
+            pos = open_positions[replied_id]
+            print(f"📩 Nhận reply cho message_id={replied_id} → Đóng {pos['symbol']}")
+            close_position(pos['symbol'], pos['side'], pos['coin'], text)
+            del open_positions[replied_id]  # Xóa khỏi tracking
+            save_positions(open_positions)
+        return  # Reply thì không xử lý tiếp
+
+    # ── Trường hợp 2: Tin vào lệnh gốc ──
     if "GÓC NHÌN CÁ NHÂN" not in text:
         return
 
     signal = parse_signal(text)
-
     if not signal:
-        # Parse thất bại → báo miss
         send_telegram(
             f"⚠️ <b>MISS LỆNH — PARSE THẤT BẠI</b>\n"
             f"⏰ <code>{now()}</code>\n"
-            f"📋 Lý do: Không đọc được tín hiệu (thiếu entry/SL/coin?)\n\n"
+            f"📋 Lý do: Không đọc được tín hiệu\n\n"
             f"📩 <b>Tin nhắn gốc:</b>\n<pre>{text[:800]}</pre>"
         )
-        print("⚠️ Parse thất bại.")
         return
 
-    execute_trade(signal, text)
+    source_message_id = event.message.id
+    execute_trade(signal, text, source_message_id)
 
 async def main():
     mode = "DEMO 🧪" if OKX_SANDBOX_MODE else "REAL 💰"
