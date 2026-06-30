@@ -4,3 +4,4 @@
 __pycache__/
 .venv
 open_positions.json
+logs
