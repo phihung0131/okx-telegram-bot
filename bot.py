@@ -461,6 +461,8 @@ async def handler(event):
 
     text = event.raw_text
 
+    send_telegram(f"📩 <b>Nhận tin mới</b> từ nhóm\n⏰ <code>{now()}</code>\n<pre>{text[:800]}</pre>")
+
     # ── Trường hợp 1: Tin reply → kiểm tra đóng lệnh ──
     if event.message.reply_to:
         replied_id = event.message.reply_to.reply_to_msg_id
