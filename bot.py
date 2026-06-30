@@ -25,6 +25,8 @@ OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE") if not OKX_SANDBOX_MODE else os.get
 USDT_BUDGET = float(os.getenv("USDT_BUDGET", 5.0))
 LEVERAGE = int(os.getenv("LEVERAGE", 5))
 
+processed_message_ids = set()
+
 # ====================== GLOBALS ======================
 POSITIONS_FILE = "open_positions.json"
 def load_positions():
@@ -43,6 +45,9 @@ def save_positions(positions):
 open_positions = load_positions()
 print(f"📂 Loaded {len(open_positions)} vị thế đang mở từ file")
 
+def format_price(price):
+    """Format giá tránh scientific notation (lỗi với OKX khi giá quá nhỏ, vd SHIB/PEPE)."""
+    return f"{price:.10f}".rstrip('0').rstrip('.') if '.' in f"{price:.10f}" else f"{price:.10f}"
 
 def now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -167,9 +172,11 @@ def execute_trade(signal, raw_text, source_message_id):
     symbol = resolved
 
     try:
-        market     = exchange.market(symbol)
-        notional   = USDT_BUDGET * LEVERAGE
-        raw_amount = notional / entry
+        market        = exchange.market(symbol)
+        contract_size = market.get('contractSize') or 1
+        notional      = USDT_BUDGET * LEVERAGE
+        raw_amount    = (notional / entry) / contract_size
+
         min_amount = market.get('limits', {}).get('amount', {}).get('min', 1)
 
         if raw_amount < min_amount:
@@ -246,14 +253,14 @@ def execute_trade(signal, raw_text, source_message_id):
         attach_algo = []
         attach_algo.append({
             "attachAlgoOrdType": "conditional",
-            "slTriggerPx": str(sl_price),
+            "slTriggerPx": format_price(sl_price),
             "slOrdPx": "-1",
             "slTriggerPxType": "last",
         })
         if tp_price:
             attach_algo.append({
                 "attachAlgoOrdType": "conditional",
-                "tpTriggerPx": str(tp_price),
+                "tpTriggerPx": format_price(tp_price),
                 "tpOrdPx": "-1",
                 "tpTriggerPxType": "last",
             })
@@ -273,7 +280,8 @@ def execute_trade(signal, raw_text, source_message_id):
 
         order_id     = order.get('id', 'N/A')
         filled_price = order.get('average') or order.get('price') or market_price
-        filled_qty   = order.get('filled') or amount
+        filled_qty_contracts = order.get('filled') or amount
+        filled_qty_coin = filled_qty_contracts * contract_size
         fee_info     = order.get('fee') or {}
         fee_cost     = fee_info.get('cost', 'N/A')
         fee_curr     = fee_info.get('currency', '')
@@ -301,7 +309,7 @@ def execute_trade(signal, raw_text, source_message_id):
             f"{'─'*20}\n"
             f"<b>📈 THỰC TẾ ĐÃ VÀO</b>\n"
             f"  Filled price     : <code>{filled_price}</code>\n"
-            f"  Amount           : <code>{filled_qty}</code> {coin}\n"
+            f"  Amount           : <code>{filled_qty_coin}</code> {coin}  ({filled_qty_contracts} contracts)\n"
             f"  Notional         : <code>{notional:.2f} USDT</code>  (x{LEVERAGE})\n"
             f"  Phí giao dịch    : <code>{fee_cost} {fee_curr}</code>\n"
             f"{'─'*20}\n"
@@ -402,6 +410,11 @@ async def sync_positions_loop():
     """Định kỳ 300s check position thực tế, dọn dẹp JSON nếu đã đóng."""
     while True:
         await asyncio.sleep(300)
+
+        if len(processed_message_ids) > 100:
+            processed_message_ids.clear()
+            print("🧹 Đã dọn processed_message_ids")
+
         if not open_positions:
             continue
 
@@ -438,6 +451,14 @@ client = TelegramClient('session_crypto_bot', TELEGRAM_API_ID, TELEGRAM_API_HASH
 
 @client.on(events.NewMessage(chats=TARGET_GROUP_ID))
 async def handler(event):
+    msg_id = event.message.id
+
+    # ── Chống xử lý trùng ──
+    if msg_id in processed_message_ids:
+        print(f"⏭️ Message {msg_id} đã xử lý rồi, bỏ qua.")
+        return
+    processed_message_ids.add(msg_id)
+
     text = event.raw_text
 
     # ── Trường hợp 1: Tin reply → kiểm tra đóng lệnh ──
@@ -447,7 +468,7 @@ async def handler(event):
             pos = open_positions[replied_id]
             print(f"📩 Nhận reply cho message_id={replied_id} → Đóng {pos['symbol']}")
             close_position(pos['symbol'], pos['side'], pos['coin'], text)
-            del open_positions[replied_id]  # Xóa khỏi tracking
+            del open_positions[replied_id]
             save_positions(open_positions)
         return  # Reply thì không xử lý tiếp
 
@@ -456,17 +477,13 @@ async def handler(event):
         return
 
     signal = parse_signal(text)
-    if not signal:
-        send_telegram(
-            f"⚠️ <b>MISS LỆNH — PARSE THẤT BẠI</b>\n"
-            f"⏰ <code>{now()}</code>\n"
-            f"📋 Lý do: Không đọc được tín hiệu\n\n"
-            f"📩 <b>Tin nhắn gốc:</b>\n<pre>{text[:800]}</pre>"
-        )
+    if not signal or signal['entry'] <= 0 or signal['sl'] <= 0:
+        send_telegram("⚠️ MISS LỆNH — Entry/SL = 0, có thể lỗi định dạng số (dấu phẩy thay vì chấm)")
         return
 
     source_message_id = event.message.id
-    execute_trade(signal, text, source_message_id)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, execute_trade, signal, text, source_message_id)
 
 async def main():
     mode = "DEMO 🧪" if OKX_SANDBOX_MODE else "REAL 💰"
