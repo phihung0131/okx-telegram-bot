@@ -74,7 +74,11 @@ OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE") if not OKX_SANDBOX_MODE else os.get
 USDT_BUDGET = float(os.getenv("USDT_BUDGET", 5.0))
 LEVERAGE = int(os.getenv("LEVERAGE", 5))
 
+HEALTHCHECK_CHANNEL_ID = int(os.getenv("HEALTHCHECK_CHANNEL_ID")) if os.getenv("HEALTHCHECK_CHANNEL_ID") else None
+
 processed_message_ids = set()
+BOT_START_TIME = datetime.now()
+last_signal_message_at = None
 
 # ====================== GLOBALS ======================
 POSITIONS_FILE = "open_positions.json"
@@ -549,6 +553,9 @@ async def handler(event):
         return
     processed_message_ids.add(msg_id)
 
+    global last_signal_message_at
+    last_signal_message_at = datetime.now()
+
     text = event.raw_text
     logger.info(f"Nhận tin mới msg_id={msg_id}: {text[:120].replace(chr(10), ' ')}...")
 
@@ -586,6 +593,49 @@ async def handler(event):
     await loop.run_in_executor(None, execute_trade, signal, text, source_message_id)
 
 
+# ====================== HEALTHCHECK HANDLER ======================
+# Đăng ký riêng, chỉ khi có cấu hình HEALTHCHECK_CHANNEL_ID. Mục đích: bất kỳ tin nhắn nào
+# gửi vào channel test này (không liên quan tới logic giao dịch / sandbox mode) đều khiến
+# bot trả lời ngay lập tức -> xác nhận tiến trình bot + kết nối Telegram vẫn còn sống.
+# Cố tình KHÔNG gọi tới OKX exchange ở đây để không bị block/chậm bởi rate-limit hay mất
+# kết nối sàn — chỉ cần Telethon trả lời được là coi như VPS + bot process còn sống.
+if HEALTHCHECK_CHANNEL_ID:
+    @client.on(events.NewMessage(chats=HEALTHCHECK_CHANNEL_ID))
+    async def healthcheck_handler(event):
+        try:
+            uptime = datetime.now() - BOT_START_TIME
+            mode = "DEMO 🧪" if OKX_SANDBOX_MODE else "REAL 💰"
+
+            if last_signal_message_at:
+                idle = datetime.now() - last_signal_message_at
+                idle_str = f"{int(idle.total_seconds() // 60)} phút trước"
+            else:
+                idle_str = "chưa nhận tin nào kể từ khi khởi động"
+
+            reply_text = (
+                f"✅ <b>BOT ĐANG SỐNG</b>\n"
+                f"⏰ <code>{now()}</code>\n"
+                f"🌐 Mode hiện tại: <b>{mode}</b>\n"
+                f"⏳ Uptime: <b>{str(uptime).split('.')[0]}</b>\n"
+                f"📡 Telegram client: <b>{'connected' if client.is_connected() else 'DISCONNECTED ⚠️'}</b>\n"
+                f"📨 Tin nhắn gần nhất ở channel chính: <b>{idle_str}</b>\n"
+                f"📂 Vị thế đang track: <b>{len(open_positions)}</b>"
+            )
+
+            await event.reply(reply_text, parse_mode="html")
+            logger.info(f"Healthcheck ping nhận và trả lời thành công (uptime={uptime})")
+        except Exception:
+            logger.exception("healthcheck_handler: lỗi khi trả lời ping")
+            # Cố gắng báo lỗi qua Telegram Bot API như phương án dự phòng nếu Telethon reply lỗi
+            send_telegram(
+                f"⚠️ <b>HEALTHCHECK LỖI</b>\n"
+                f"⏰ <code>{now()}</code>\n"
+                f"📋 Bot vẫn chạy nhưng không reply được ping trong channel test, xem log để biết chi tiết."
+            )
+else:
+    logger.info("HEALTHCHECK_CHANNEL_ID chưa được cấu hình trong .env, bỏ qua healthcheck handler")
+
+
 async def main():
     mode = "DEMO 🧪" if OKX_SANDBOX_MODE else "REAL 💰"
     logger.info(f"Bot đang khởi động - Mode: {mode}")
@@ -607,11 +657,3 @@ if __name__ == '__main__':
     except Exception:
         logger.exception("Bot crash ở top-level")
         raise
-
-# async def find_chat_ids():
-#     await client.start()
-#     async for dialog in client.iter_dialogs():
-#         print(f"{dialog.id:<25} | {type(dialog.entity).__name__:<20} | {dialog.name}")
-
-# if __name__ == '__main__':
-#     asyncio.run(find_chat_ids())
