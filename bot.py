@@ -602,6 +602,51 @@ async def handler(event):
 if HEALTHCHECK_CHANNEL_ID:
     @client.on(events.NewMessage(chats=HEALTHCHECK_CHANNEL_ID))
     async def healthcheck_handler(event):
+        text = event.raw_text.strip()
+
+        # ── Lệnh /dialogs — liệt kê tất cả chat bot đang tham gia để so sánh ID ──
+        if text.lower() == "/dialogs":
+            try:
+                lines = ["🗂 <b>DANH SÁCH CHAT BOT ĐANG THAM GIA</b>\n"]
+                async for dialog in client.iter_dialogs(limit=40):
+                    entity = dialog.entity
+                    etype  = type(entity).__name__
+                    lines.append(f"<code>{dialog.id}</code>  [{etype}]  {dialog.name}")
+                lines.append(f"\n📌 TARGET_GROUP_ID hiện tại: <code>{TARGET_GROUP_ID}</code>")
+                await event.reply("\n".join(lines), parse_mode="html")
+                logger.info("Healthcheck /dialogs: đã trả lời danh sách dialogs")
+            except Exception:
+                logger.exception("healthcheck_handler /dialogs: lỗi")
+                await event.reply("❌ Lỗi khi lấy danh sách dialogs, xem log.")
+            return
+
+        # ── Lệnh /target — kiểm tra bot có resolve được TARGET_GROUP_ID không ──
+        if text.lower() == "/target":
+            try:
+                entity = await client.get_entity(TARGET_GROUP_ID)
+                etype  = type(entity).__name__
+                title  = getattr(entity, "title", None) or getattr(entity, "username", "N/A")
+                await event.reply(
+                    f"🎯 <b>TARGET_GROUP_ID CHECK</b>\n"
+                    f"ID    : <code>{TARGET_GROUP_ID}</code>\n"
+                    f"Type  : <code>{etype}</code>\n"
+                    f"Name  : <b>{title}</b>\n"
+                    f"✅ Bot resolve được entity này — nếu vẫn không nhận event thì tài khoản chưa join hoặc ID bị âm/dương sai.",
+                    parse_mode="html"
+                )
+                logger.info(f"Healthcheck /target: resolve OK → {etype} '{title}'")
+            except Exception as e:
+                await event.reply(
+                    f"❌ <b>Không resolve được TARGET_GROUP_ID</b>\n"
+                    f"ID: <code>{TARGET_GROUP_ID}</code>\n"
+                    f"Lỗi: <code>{e}</code>\n\n"
+                    f"👉 Gửi /dialogs để lấy ID đúng rồi cập nhật .env",
+                    parse_mode="html"
+                )
+                logger.warning(f"Healthcheck /target: resolve FAILED: {e}")
+            return
+
+        # ── Mặc định: status ping ──
         try:
             uptime = datetime.now() - BOT_START_TIME
             mode = "DEMO 🧪" if OKX_SANDBOX_MODE else "REAL 💰"
@@ -619,14 +664,14 @@ if HEALTHCHECK_CHANNEL_ID:
                 f"⏳ Uptime: <b>{str(uptime).split('.')[0]}</b>\n"
                 f"📡 Telegram client: <b>{'connected' if client.is_connected() else 'DISCONNECTED ⚠️'}</b>\n"
                 f"📨 Tin nhắn gần nhất ở channel chính: <b>{idle_str}</b>\n"
-                f"📂 Vị thế đang track: <b>{len(open_positions)}</b>"
+                f"📂 Vị thế đang track: <b>{len(open_positions)}</b>\n\n"
+                f"<i>Lệnh chẩn đoán: /dialogs  /target</i>"
             )
 
             await event.reply(reply_text, parse_mode="html")
             logger.info(f"Healthcheck ping nhận và trả lời thành công (uptime={uptime})")
         except Exception:
             logger.exception("healthcheck_handler: lỗi khi trả lời ping")
-            # Cố gắng báo lỗi qua Telegram Bot API như phương án dự phòng nếu Telethon reply lỗi
             send_telegram(
                 f"⚠️ <b>HEALTHCHECK LỖI</b>\n"
                 f"⏰ <code>{now()}</code>\n"
