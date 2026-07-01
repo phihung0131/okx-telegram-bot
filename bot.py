@@ -543,39 +543,44 @@ async def sync_positions_loop():
 # ====================== TELEGRAM LISTENER ======================
 client = TelegramClient('session_crypto_bot', TELEGRAM_API_ID, TELEGRAM_API_HASH)
 
+# Lưu message_id lớn nhất đã xử lý để poll chỉ lấy tin mới hơn
+_last_seen_msg_id: int = 0
 
-@client.on(events.NewMessage(chats=TARGET_GROUP_ID))
-async def handler(event):
-    msg_id = event.message.id
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", 10))  # giây, mặc định 10s
+
+
+async def process_message(msg) -> None:
+    """Xử lý 1 message object (dùng chung cho cả poll loop và event handler)."""
+    global last_signal_message_at
+    msg_id = msg.id
 
     if msg_id in processed_message_ids:
         logger.debug(f"Message {msg_id} đã xử lý rồi, bỏ qua")
         return
     processed_message_ids.add(msg_id)
 
-    global last_signal_message_at
     last_signal_message_at = datetime.now()
-
-    text = event.raw_text
-    logger.info(f"Nhận tin mới msg_id={msg_id}: {text[:120].replace(chr(10), ' ')}...")
-
+    text = msg.raw_text or ""
+    logger.info(f"Xử lý msg_id={msg_id}: {text[:120].replace(chr(10), ' ')}...")
     send_telegram(f"📩 <b>Nhận tin mới</b> từ nhóm\n⏰ <code>{now()}</code>\n<pre>{text[:800]}</pre>")
 
     # ── Trường hợp 1: Tin reply → kiểm tra đóng lệnh ──
-    if event.message.reply_to:
-        replied_id = event.message.reply_to.reply_to_msg_id
+    if msg.reply_to:
+        replied_id = msg.reply_to.reply_to_msg_id
         if replied_id in open_positions:
             pos = open_positions[replied_id]
-            logger.info(f"Nhận reply cho message_id={replied_id} → Đóng {pos['symbol']}")
+            logger.info(f"Reply cho message_id={replied_id} → Đóng {pos['symbol']}")
             try:
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, close_position, pos['symbol'], pos['side'], pos['coin'], text)
+                await loop.run_in_executor(
+                    None, close_position, pos['symbol'], pos['side'], pos['coin'], text
+                )
             finally:
                 del open_positions[replied_id]
                 save_positions(open_positions)
         else:
-            logger.debug(f"Reply tới msg_id={replied_id} nhưng không có trong open_positions, bỏ qua")
-        return  # Reply thì không xử lý tiếp
+            logger.debug(f"Reply tới msg_id={replied_id} không có trong open_positions, bỏ qua")
+        return
 
     # ── Trường hợp 2: Tin vào lệnh gốc ──
     if "GÓC NHÌN CÁ NHÂN" not in text:
@@ -588,9 +593,60 @@ async def handler(event):
         send_telegram("⚠️ MISS LỆNH — Entry/SL = 0, có thể lỗi định dạng số (dấu phẩy thay vì chấm)")
         return
 
-    source_message_id = event.message.id
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, execute_trade, signal, text, source_message_id)
+    await loop.run_in_executor(None, execute_trade, signal, text, msg_id)
+
+
+async def poll_channel_loop():
+    """
+    Chủ động poll channel mỗi POLL_INTERVAL giây thay vì chờ Telegram đẩy event.
+
+    Lý do cần poll: Telegram server KHÔNG đẩy NewMessage update về user client
+    thường (non-admin) trong các channel lớn — dù client đang connected, join đủ,
+    và resolve được entity. Poll là cách đáng tin cậy duy nhất trong trường hợp này.
+    """
+    global _last_seen_msg_id
+    logger.info(f"poll_channel_loop khởi động — interval={POLL_INTERVAL}s, target={TARGET_GROUP_ID}")
+
+    # Lần đầu: lấy message mới nhất để làm baseline, không xử lý tin cũ
+    try:
+        msgs = await client.get_messages(TARGET_GROUP_ID, limit=1)
+        if msgs:
+            _last_seen_msg_id = msgs[0].id
+            logger.info(f"Baseline msg_id={_last_seen_msg_id} (tin cũ trước thời điểm start sẽ bị bỏ qua)")
+    except Exception:
+        logger.exception("poll_channel_loop: lỗi khi lấy baseline")
+
+    while True:
+        await asyncio.sleep(POLL_INTERVAL)
+        try:
+            # Lấy tối đa 10 tin mới hơn _last_seen_msg_id (đủ dùng, không spam API)
+            msgs = await client.get_messages(
+                TARGET_GROUP_ID,
+                limit=10,
+                min_id=_last_seen_msg_id,
+            )
+            if not msgs:
+                continue
+
+            # get_messages trả về mới nhất trước — đảo lại để xử lý theo thứ tự thời gian
+            for msg in reversed(msgs):
+                if msg.id > _last_seen_msg_id:
+                    _last_seen_msg_id = msg.id
+                    logger.debug(f"poll: phát hiện tin mới msg_id={msg.id}")
+                    await process_message(msg)
+
+        except Exception:
+            logger.exception("poll_channel_loop: lỗi khi poll, sẽ thử lại sau")
+
+
+# Giữ lại event handler làm fallback phòng khi Telegram bất ngờ đẩy update
+# (ví dụ nếu account được promote lên admin sau này).
+# processed_message_ids đảm bảo không xử lý trùng dù cả 2 đều kích hoạt.
+@client.on(events.NewMessage(chats=TARGET_GROUP_ID))
+async def handler(event):
+    logger.debug(f"[event-push] Nhận NewMessage push msg_id={event.message.id} (fallback handler)")
+    await process_message(event.message)
 
 
 # ====================== HEALTHCHECK HANDLER ======================
@@ -716,6 +772,7 @@ async def main():
             logger.exception(f"Không resolve được TARGET_GROUP_ID={TARGET_GROUP_ID}, kiểm tra lại .env")
 
         asyncio.create_task(sync_positions_loop())
+        asyncio.create_task(poll_channel_loop())
         await client.run_until_disconnected()
     except Exception:
         logger.exception("main(): lỗi nghiêm trọng khiến bot dừng")
