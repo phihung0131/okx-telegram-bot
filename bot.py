@@ -687,6 +687,34 @@ async def main():
     try:
         await client.start()
         logger.info("Telegram client đã kết nối thành công")
+
+        # ── QUAN TRỌNG: warm-up dialog cache ──────────────────────────────────
+        # Telethon user client chỉ nhận update/event từ những chat đã nằm trong
+        # dialog cache của session. Nếu bỏ bước này, channel dù đã join vẫn im
+        # lặng hoàn toàn — không có lỗi, không có log, event đơn giản là không
+        # bao giờ được đẩy về.
+        logger.info("Đang warm-up dialog cache (get_dialogs)...")
+        dialogs = await client.get_dialogs()
+        logger.info(f"Warm-up xong: {len(dialogs)} dialogs đã vào cache")
+
+        # catch_up() yêu cầu Telegram gửi lại các update bị bỏ lỡ kể từ lần
+        # disconnect trước — hữu ích khi VPS restart mà channel vẫn có tin mới
+        await client.catch_up()
+        logger.info("catch_up() hoàn tất — đã đồng bộ update bị bỏ lỡ")
+        # ──────────────────────────────────────────────────────────────────────
+
+        # Xác nhận bot có thể resolve TARGET_GROUP_ID và log tên channel
+        try:
+            target_entity = await client.get_entity(TARGET_GROUP_ID)
+            target_name   = getattr(target_entity, "title", str(TARGET_GROUP_ID))
+            logger.info(f"Đang lắng nghe channel: '{target_name}' (id={TARGET_GROUP_ID})")
+            send_telegram(
+                f"👂 <b>Đang lắng nghe</b>: <b>{target_name}</b>\n"
+                f"🆔 <code>{TARGET_GROUP_ID}</code>"
+            )
+        except Exception:
+            logger.exception(f"Không resolve được TARGET_GROUP_ID={TARGET_GROUP_ID}, kiểm tra lại .env")
+
         asyncio.create_task(sync_positions_loop())
         await client.run_until_disconnected()
     except Exception:
