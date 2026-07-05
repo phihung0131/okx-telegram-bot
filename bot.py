@@ -75,6 +75,7 @@ USDT_BUDGET = float(os.getenv("USDT_BUDGET", 5.0))
 LEVERAGE = int(os.getenv("LEVERAGE", 5))
 
 HEALTHCHECK_CHANNEL_ID = int(os.getenv("HEALTHCHECK_CHANNEL_ID")) if os.getenv("HEALTHCHECK_CHANNEL_ID") else None
+CLOSE_ON_REPLY_ENABLED = os.getenv("CLOSE_ON_REPLY_ENABLED", "True").lower() == "true"
 
 processed_message_ids = set()
 BOT_START_TIME = datetime.now()
@@ -566,6 +567,10 @@ async def process_message(msg) -> None:
 
     # ── Trường hợp 1: Tin reply → kiểm tra đóng lệnh ──
     if msg.reply_to:
+        if not CLOSE_ON_REPLY_ENABLED:
+            logger.debug(f"msg_id={msg_id}: là reply nhưng CLOSE_ON_REPLY_ENABLED=False, bỏ qua (để lệnh chạy tới TP/SL)")
+            return  # Reply thì không xử lý tiếp
+
         replied_id = msg.reply_to.reply_to_msg_id
         if replied_id in open_positions:
             pos = open_positions[replied_id]
