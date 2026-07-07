@@ -567,7 +567,10 @@ async def process_message(msg) -> None:
 
     # ── Trường hợp 1: Tin reply → kiểm tra đóng lệnh ──
     if msg.reply_to:
-        if not CLOSE_ON_REPLY_ENABLED:
+        text_lower = (msg.text or "").lower()
+        has_close_keyword = "đóng" in text_lower or "hủy" in text_lower
+
+        if not CLOSE_ON_REPLY_ENABLED and not has_close_keyword:
             logger.debug(f"msg_id={msg_id}: là reply nhưng CLOSE_ON_REPLY_ENABLED=False, bỏ qua (để lệnh chạy tới TP/SL)")
             return  # Reply thì không xử lý tiếp
 
