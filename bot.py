@@ -563,7 +563,7 @@ async def process_message(msg) -> None:
     last_signal_message_at = datetime.now()
     text = msg.raw_text or ""
     logger.info(f"Xử lý msg_id={msg_id}: {text[:120].replace(chr(10), ' ')}...")
-    send_telegram(f"📩 <b>Nhận tin mới</b> từ nhóm\n⏰ <code>{now()}</code>\n<pre>{text[:800]}</pre>")
+    # send_telegram(f"📩 <b>Nhận tin mới</b> từ nhóm\n⏰ <code>{now()}</code>\n<pre>{text[:800]}</pre>")
 
     # ── Trường hợp 1: Tin reply → kiểm tra đóng lệnh ──
     if msg.reply_to:
